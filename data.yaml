@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 9
+names: ['Tree weeler', 'bicycle', 'bus', 'car', 'minitruck', 'motorbike', 'riksha', 'truck', 'van']
+
+roboflow:
+  workspace: maleesha-rukshan
+  project: vehical-detection-mssep-qikez
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/maleesha-rukshan/vehical-detection-mssep-qikez/dataset/1
