@@ -9,7 +9,7 @@ import socket
 import json
 
 # ═══════════════════════════════════════════════════════════
-#   DEFAULT PATHS & NETWORK
+#  DEFAULT PATHS & NETWORK
 # ═══════════════════════════════════════════════════════════
 
 DEFAULT_MODEL = r'C:\Final project\runs\vehicle_detection_v1\weights\best v2.pt'
@@ -17,14 +17,18 @@ DEFAULT_VIDEO_1 = r'C:\Users\Nadhu\Downloads\stock-footage-uttarakhand-in-may-th
 DEFAULT_VIDEO_2 = r'C:\Users\Nadhu\Downloads\stock-footage-uttarakhand-in-may-the-traffic-on-a-curvy-road-surrounded-by-mountains-under-blue-sky.mp4'
 FOCAL_LENGTH  = None
 
-# Target ESP32 Configs (Dual IP Support)
-ESP32_IP_ROAD = "10.134.24.145"    # Roadside ESP32 IP එක
-ESP32_IP_VEHICLE = "10.134.24.145" # In-Vehicle ESP32 IP එක
+# 1. Roadside ESP32 (Traffic Lights + Dual 1.3" OLEDs)
+ESP32_IP   = "10.131.104.140"  # <-- Roadside ESP32 IP
 ESP32_PORT = 4210
+
+# 2. In-Car ESP32 Dev Module (Side 1 Car Alert: 0.96" OLED + Red LED + 1s Buzzer)
+CAR_ESP32_IP   = "10.131.104.118"  # <-- කාරයේ ESP32 IP එක මෙතනට දාන්න
+CAR_ESP32_PORT = 4210
+
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # ═══════════════════════════════════════════════════════════
-#   VEHICLE DATA TABLES
+#  VEHICLE DATA TABLES
 # ═══════════════════════════════════════════════════════════
 
 CLASS_NAMES = [
@@ -53,7 +57,7 @@ ROAD_CONDITIONS = {
 }
 
 # ═══════════════════════════════════════════════════════════
-#   TRACKING TUNING
+#  TRACKING TUNING
 # ═══════════════════════════════════════════════════════════
 
 DIST_EMA_ALPHA   = 0.15
@@ -71,7 +75,7 @@ LK_PARAMS   = dict(winSize=(21,21), maxLevel=3,
 FEAT_PARAMS = dict(maxCorners=10, qualityLevel=0.15, minDistance=8, blockSize=7)
 
 # ═══════════════════════════════════════════════════════════
-#   DARK THEME PALETTE
+#  DARK THEME PALETTE
 # ═══════════════════════════════════════════════════════════
 
 BG       = '#0f1117'
@@ -87,7 +91,7 @@ C_ORANGE = '#f97316'
 C_RED    = '#ef4444'
 
 # ═══════════════════════════════════════════════════════════
-#   PHYSICS
+#  PHYSICS
 # ═══════════════════════════════════════════════════════════
 
 def banked_speed(mu, r, theta_deg):
@@ -104,7 +108,7 @@ def calc_brake_force(cls_name, decel_ms2):
     return round(VEHICLE_MASS.get(cls_name, 1500) * decel_ms2, 0)
 
 # ═══════════════════════════════════════════════════════════
-#   COLOR HELPERS & OPTICAL FLOW
+#  COLOR HELPERS & OPTICAL FLOW
 # ═══════════════════════════════════════════════════════════
 
 def spd_color_bgr(s, limit):
@@ -121,6 +125,13 @@ def spd_color_tk(s, limit):
     if s >= limit * 0.9: return C_YELLOW
     if s >= limit * 0.7: return '#a3e635'
     return C_GREEN
+
+def dist_dot_char(d):
+    if d is None: return '⚪'
+    if d < 10:    return '🔴'
+    if d < 25:    return '🟠'
+    if d < 50:    return '🟡'
+    return '🟢'
 
 def iou(a, b):
     ix1,iy1 = max(a[0],b[0]), max(a[1],b[1])
@@ -157,7 +168,7 @@ def flow_mag(pg, cg, pts):
     return float(np.median(np.hypot(d[:,0],d[:,1])))
 
 # ═══════════════════════════════════════════════════════════
-#   WARNING OVERLAY & SPEEDOMETER
+#  WARNING OVERLAY & SPEEDOMETER
 # ═══════════════════════════════════════════════════════════
 
 def draw_warning_overlay(frame, vehicles, base_safe, flash_state, flash_intensity, title="WARNING SYSTEM"):
@@ -169,7 +180,7 @@ def draw_warning_overlay(frame, vehicles, base_safe, flash_state, flash_intensit
                   v['speed'] is not None and v['speed'] >= v['limit']]
     with_dist  = [v for v in vehicles if v['distance'] is not None]
     closest    = min(with_dist, key=lambda v: v['distance']) if with_dist else None
-    danger     = bool(over_speed)
+    danger     = bool(over_speed) or (closest and closest['distance'] < 10)
 
     overlay = frame.copy()
     cv2.rectangle(overlay, (x0,y0), (x0+pw, y0+ph), (15,18,28), -1)
@@ -184,8 +195,10 @@ def draw_warning_overlay(frame, vehicles, base_safe, flash_state, flash_intensit
     yt = y0 + 38
     if closest:
         d    = closest['distance']
-        dcol = (0,115,250) if d<25 else (0,220,230) if d<50 else (50,200,50)
-        dlbl = ('WARNING' if d<25 else 'CAUTION' if d<50 else 'SAFE')
+        dcol = ((0,0,230) if d<10 else (0,115,250) if d<25
+                else (0,220,230) if d<50 else (50,200,50))
+        dlbl = ('DANGER' if d<10 else 'WARNING' if d<25
+                else 'CAUTION' if d<50 else 'SAFE')
         cv2.circle(frame, (x0+16, yt-2), 7, dcol, -1)
         cv2.putText(frame, f'{dlbl}  Closest:{d:.1f}m ({closest["type"]})',
                     (x0+28, yt+2), cv2.FONT_HERSHEY_SIMPLEX, 0.42, dcol, 1, cv2.LINE_AA)
@@ -200,13 +213,13 @@ def draw_warning_overlay(frame, vehicles, base_safe, flash_state, flash_intensit
                 cv2.FONT_HERSHEY_SIMPLEX, 0.40, (160,160,200), 1, cv2.LINE_AA)
     yt += 18
     if not over_speed:
-        cv2.putText(frame, '   All vehicles within limit', (x0+4,yt+4),
+        cv2.putText(frame, '  All vehicles within limit', (x0+4,yt+4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.40, (50,200,80), 1, cv2.LINE_AA)
     else:
         for v in over_speed[:3]:
             excess = v['speed'] - v['limit']
             scol   = (0,60,230) if excess>15 else (0,130,255)
-            cv2.putText(frame, f'   #{v["id"]} {v["type"]}  {int(v["speed"])}km/h  +{int(excess)} over',
+            cv2.putText(frame, f'  #{v["id"]} {v["type"]}  {int(v["speed"])}km/h  +{int(excess)} over',
                         (x0+4,yt+4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, scol, 1, cv2.LINE_AA)
             yt += 16
 
@@ -232,7 +245,7 @@ def draw_speedometer(frame, speed, limit, cx, cy, r=34):
     cv2.putText(frame,t,(cx-tw//2,cy+th//2),cv2.FONT_HERSHEY_SIMPLEX,0.40,(255,255,255),2)
 
 # ═══════════════════════════════════════════════════════════
-#   TRACK + TRACKER
+#  TRACK + TRACKER
 # ═══════════════════════════════════════════════════════════
 
 class Track:
@@ -305,7 +318,7 @@ class Tracker:
         return list(self.tracks.values())
 
 # ═══════════════════════════════════════════════════════════
-#   SHARED STATE (DUAL SOURCE MODIFIED)
+#  SHARED STATE (DUAL SOURCE + DUAL ESP32 NODE)
 # ═══════════════════════════════════════════════════════════
 
 class SharedState:
@@ -321,12 +334,13 @@ class SharedState:
         self.frame_count=0; self.total_frames=0
         self.max_speed_seen=0.0; self.max_speed_cls=''
         self.speed_alerts=0; self.running=True; self.paused=False
-        
+
         self._src_lock=threading.Lock()
         self._new_source1=None; self._new_source2=None
         self.source_status1='idle'; self.source_status2='idle'
-        
+
         self.esp32_connected=False; self.esp32_last_success=0.0
+        self.car_esp32_connected=False; self.car_esp32_last_success=0.0
         self._alerts_log=deque(maxlen=30)
 
     def push(self, f1, f2, v1, v2, overspeed, fps, fc, mx_spd, mx_cls, alerts):
@@ -378,6 +392,14 @@ class SharedState:
     def get_esp32_status(self):
         with self._lock: return self.esp32_connected, self.esp32_last_success
 
+    def set_car_esp32_status(self,connected):
+        with self._lock:
+            self.car_esp32_connected=connected
+            if connected: self.car_esp32_last_success=time.time()
+
+    def get_car_esp32_status(self):
+        with self._lock: return self.car_esp32_connected, self.car_esp32_last_success
+
     def push_alert(self,side,vid,cls_name,speed,limit):
         with self._lock:
             self._alerts_log.appendleft(
@@ -403,7 +425,7 @@ class SharedState:
         with self._lock: return dict(self.vehicle_limits)
 
 # ═══════════════════════════════════════════════════════════
-#   VIDEO WORKER THREAD (DUAL STREAM + DUAL UDP JSON)
+#  VIDEO WORKER THREAD (DUAL STREAM + ROADSIDE & CAR UDP)
 # ═══════════════════════════════════════════════════════════
 
 def open_source(src, state, side):
@@ -430,11 +452,11 @@ def open_source(src, state, side):
 
 def process_side(model, frame, prev_gray, tracker, vdt, frame_cnt, focal, conf, base_safe, side_id, state, flash_state, flash_intensity):
     if frame is None: return None, None, [], False, 0.0, '', 0
-    
+
     curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     res = model(frame, conf=conf, iou=0.45, imgsz=640, device=device, verbose=False)[0]
-    
+
     detections = []
     for b in res.boxes:
         cid = int(b.cls[0])
@@ -450,9 +472,9 @@ def process_side(model, frame, prev_gray, tracker, vdt, frame_cnt, focal, conf, 
         x1, y1, x2, y2 = trk.box; box_h = y2 - y1
         trk.push_distance(focal_distance(box_h, trk.cls_name, focal))
         trk.push_speed(vdt)
-        
+
         if not getattr(trk, 'is_towards', True): continue
-            
+
         if prev_gray is not None:
             if trk.flow_pts is None: trk.flow_pts = extract_feats(prev_gray, trk.box)
             mag = flow_mag(prev_gray, curr_gray, trk.flow_pts)
@@ -462,7 +484,7 @@ def process_side(model, frame, prev_gray, tracker, vdt, frame_cnt, focal, conf, 
 
         veh_lim = vehicle_limit(trk.cls_name, base_safe)
         show_s = trk.frame_count >= MIN_TRACK_FRAMES
-        
+
         if show_s and trk.smooth_speed > veh_lim:
             overspeed = True; alerts += 1
             if not trk.alert_logged:
@@ -470,7 +492,7 @@ def process_side(model, frame, prev_gray, tracker, vdt, frame_cnt, focal, conf, 
                 trk.alert_logged = True
         elif show_s:
             trk.alert_logged = False
-            
+
         if trk.smooth_speed > max_spd: max_spd = trk.smooth_speed; max_cls = trk.cls_name
 
         color = CLASS_COLORS_BGR.get(trk.cls_name, (200, 200, 200))
@@ -529,10 +551,11 @@ def video_worker(state, model, init_src1, init_src2):
 
         ret1, frame1 = cap1.read() if cap1 else (False, None)
         ret2, frame2 = cap2.read() if cap2 else (False, None)
-        
-        if cap1 and not ret1 and not is_cam1: 
+
+        # Loop videos if file ends
+        if cap1 and not ret1 and not is_cam1:
             cap1.set(cv2.CAP_PROP_POS_FRAMES, 0); ret1, frame1 = cap1.read()
-        if cap2 and not ret2 and not is_cam2: 
+        if cap2 and not ret2 and not is_cam2:
             cap2.set(cv2.CAP_PROP_POS_FRAMES, 0); ret2, frame2 = cap2.read()
 
         if not ret1 and not ret2:
@@ -544,12 +567,14 @@ def video_worker(state, model, init_src1, init_src2):
         flash_intensity = (math.sin(frame_cnt * 0.25) + 1.0) / 2.0 * 0.55 + 0.10
 
         conf, mu, radius, bank, base_safe = state.get_curve_params()
-        
+
         W1 = frame1.shape[1] if frame1 is not None else 640
         W2 = frame2.shape[1] if frame2 is not None else 640
         focal1 = FOCAL_LENGTH or (W1 * 0.85); focal2 = FOCAL_LENGTH or (W2 * 0.85)
 
+        # Process Side 1
         f1, pg1, v1, os1, ms1, mc1, a1 = process_side(model, frame1, prev_gray1, tracker1, vdt1, frame_cnt, focal1, conf, base_safe, 1, state, flash_state, flash_intensity)
+        # Process Side 2
         f2, pg2, v2, os2, ms2, mc2, a2 = process_side(model, frame2, prev_gray2, tracker2, vdt2, frame_cnt, focal2, conf, base_safe, 2, state, flash_state, flash_intensity)
 
         prev_gray1 = pg1; prev_gray2 = pg2
@@ -561,12 +586,15 @@ def video_worker(state, model, init_src1, init_src2):
         t_now = time.time()
         fps_disp = 0.9 * fps_disp + 0.1 * (1.0 / max(t_now - t_prev, 1e-4))
         t_prev = t_now
-        
+
         if f1 is not None: cv2.putText(f1, f'FPS:{fps_disp:.1f}', (W1-110, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 255, 255), 2)
         if f2 is not None: cv2.putText(f2, f'FPS:{fps_disp:.1f}', (W2-110, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 255, 255), 2)
 
         state.push(f1, f2, v1, v2, any_overspeed, fps_disp, frame_cnt, max_speed_seen, max_cls_seen, total_alerts)
 
+        # ═══════════════════════════════════════════════════════════
+        #  1. SEND UDP JSON DATA TO ROADSIDE ESP32 NODE (DUAL SIDE)
+        # ═══════════════════════════════════════════════════════════
         def extract_worst(vehicles):
             valid_d = [v['distance'] for v in vehicles if v['distance'] is not None]
             c_dist = min(valid_d) if valid_d else 999.0
@@ -591,27 +619,47 @@ def video_worker(state, model, init_src1, init_src2):
                 "type": wv2['type'] if wv2 else ""
             }
         }
-        
+
         try:
-            packet_bytes = json.dumps(payload).encode('utf-8')
-            udp_socket.sendto(packet_bytes, (ESP32_IP_ROAD, ESP32_PORT))
-            udp_socket.sendto(packet_bytes, (ESP32_IP_VEHICLE, ESP32_PORT))
+            udp_socket.sendto(json.dumps(payload).encode('utf-8'), (ESP32_IP, ESP32_PORT))
             state.set_esp32_status(True)
         except Exception:
             state.set_esp32_status(False)
+
+        # ═══════════════════════════════════════════════════════════
+        #  2. SEND UDP JSON DATA TO IN-CAR ESP32 (SIDE 1 CAR ONLY)
+        # ═══════════════════════════════════════════════════════════
+        s1_cars = [v for v in v1 if v['type'] == 'car']
+        s1_over_cars = [
+            v for v in s1_cars
+            if v['show_speed'] and v['speed'] is not None and v['speed'] >= v['limit']
+        ]
+        worst_car = max(s1_over_cars, key=lambda x: x['speed'] - x['limit']) if s1_over_cars else None
+
+        car_payload = {
+            "car_detected": bool(s1_cars),
+            "overspeed": bool(worst_car),
+            "limit": int(worst_car['limit']) if worst_car else 0
+        }
+
+        try:
+            udp_socket.sendto(json.dumps(car_payload).encode('utf-8'), (CAR_ESP32_IP, CAR_ESP32_PORT))
+            state.set_car_esp32_status(True)
+        except Exception:
+            state.set_car_esp32_status(False)
 
     if cap1: cap1.release()
     if cap2: cap2.release()
 
 # ═══════════════════════════════════════════════════════════
-#   TKINTER APPLICATION
+#  TKINTER APPLICATION
 # ═══════════════════════════════════════════════════════════
 
 class App(tk.Tk):
     def __init__(self,state):
         super().__init__()
         self.state=state
-        self.title('Vehicle Detection System  —  Dual View Curve Physics  v11')
+        self.title('Vehicle Detection System  —  Dual View Curve Physics  v12 (V2I Car Alert)')
         self.configure(bg=BG)
         self.geometry('1500x860'); self.minsize(1300,740)
         self._last_vehicle_fp=None
@@ -707,12 +755,20 @@ class App(tk.Tk):
             w.pack(side='right'); self.stats[key]=w
         self._hline(lp)
 
-        esp_row=tk.Frame(lp,bg=BG2); esp_row.pack(fill='x',padx=14,pady=(0,4))
+        # Roadside + In-Car ESP32 Link Status
+        esp_row=tk.Frame(lp,bg=BG2); esp_row.pack(fill='x',padx=14,pady=(0,2))
         self.esp32_dot=tk.Label(esp_row,text='●',font=('Segoe UI',11),fg=TEXT2,bg=BG2)
         self.esp32_dot.pack(side='left')
-        tk.Label(esp_row,text=' ESP32 Link (Dual)',font=('Segoe UI',9,'bold'),fg=TEXT2,bg=BG2).pack(side='left')
+        tk.Label(esp_row,text=' Roadside ESP32',font=('Segoe UI',9,'bold'),fg=TEXT2,bg=BG2).pack(side='left')
         self.esp32_status_lbl=tk.Label(lp,text='no data sent yet',font=('Segoe UI',8),fg=TEXT2,bg=BG2,wraplength=200,justify='left',anchor='w')
-        self.esp32_status_lbl.pack(fill='x',padx=14,pady=(0,6))
+        self.esp32_status_lbl.pack(fill='x',padx=14,pady=(0,4))
+
+        car_row=tk.Frame(lp,bg=BG2); car_row.pack(fill='x',padx=14,pady=(0,2))
+        self.car_esp32_dot=tk.Label(car_row,text='●',font=('Segoe UI',11),fg=TEXT2,bg=BG2)
+        self.car_esp32_dot.pack(side='left')
+        tk.Label(car_row,text=' In-Car ESP32 (S1)',font=('Segoe UI',9,'bold'),fg=TEXT2,bg=BG2).pack(side='left')
+        self.car_esp32_status_lbl=tk.Label(lp,text='no data sent yet',font=('Segoe UI',8),fg=TEXT2,bg=BG2,wraplength=200,justify='left',anchor='w')
+        self.car_esp32_status_lbl.pack(fill='x',padx=14,pady=(0,4))
         self._hline(lp)
 
         self.pause_btn=ttk.Button(lp,text='⏸ Pause (Space)',command=self._toggle_pause)
@@ -762,6 +818,7 @@ class App(tk.Tk):
         self.tab2=ttk.Frame(self.nb)
         self.nb.add(self.tab2,text='  ⚙ Curve Settings  ')
         self._build_tab2()
+
     def _build_tab1(self):
         main = tk.Frame(self.tab1, bg=BG)
         main.pack(fill='both', expand=True)
@@ -769,6 +826,9 @@ class App(tk.Tk):
         main.columnconfigure(1, weight=1, uniform='cols')
         main.rowconfigure(0, weight=1)
 
+        # ---------------------------------------------------------
+        # COLUMN 1 (SIDE 1)
+        # ---------------------------------------------------------
         col1 = tk.Frame(main, bg=BG2)
         col1.grid(row=0, column=0, sticky='nsew', padx=(0, 3))
 
@@ -784,7 +844,7 @@ class App(tk.Tk):
 
         cols = ('ID', 'Type', 'Speed', 'Dist', 'Limit', 'Brake')
         widths = {'ID': 40, 'Type': 70, 'Speed': 65, 'Dist': 60, 'Limit': 50, 'Brake': 55}
-        
+
         self.tree1 = ttk.Treeview(data1, columns=cols, show='headings', height=5)
         for c in cols:
             self.tree1.heading(c, text=c)
@@ -797,6 +857,9 @@ class App(tk.Tk):
         self.alerts_list1 = tk.Listbox(data1, bg=BG3, fg=TEXT2, font=('Consolas', 8), width=32, borderwidth=0, highlightthickness=0, selectbackground=BG4)
         self.alerts_list1.pack(side='right', fill='y', padx=(4, 0))
 
+        # ---------------------------------------------------------
+        # COLUMN 2 (SIDE 2)
+        # ---------------------------------------------------------
         col2 = tk.Frame(main, bg=BG2)
         col2.grid(row=0, column=1, sticky='nsew', padx=(3, 0))
 
@@ -838,14 +901,15 @@ class App(tk.Tk):
         self._add_slider(outer,'Friction Coefficient (μ)','mu_var','mu_lbl',0.05,0.90,0.70,2)
         self._add_slider(outer,'Curve Radius (m)','rad_var','rad_lbl',10.0,200.0,30.0,1)
         self._add_slider(outer,'Bank Angle (°)','bank_var','bank_lbl',0.0,30.0,10.0,1)
+        self._add_slider(outer,'Detection Confidence','conf_var','conf_lbl',0.05,0.95,self.state.confidence,2,self._on_conf)
         self._hline(outer,bg=BG)
 
         tk.Label(outer,text='MAX SAFE SPEED PER VEHICLE TYPE',font=('Segoe UI',10,'bold'),fg=TEXT2,bg=BG).pack(pady=(0,2))
-        
+
         grid_frame=tk.Frame(outer,bg=BG); grid_frame.pack(fill='x',pady=(0,4))
         COLS=3
         for i in range(COLS): grid_frame.columnconfigure(i,weight=1)
-        self._mss_labels={} 
+        self._mss_labels={}
         for idx,cls in enumerate(CLASS_NAMES):
             col=idx % COLS; row_i=idx // COLS
             card=tk.Frame(grid_frame,bg=BG3,relief='flat',bd=0)
@@ -858,14 +922,15 @@ class App(tk.Tk):
             self._mss_labels[cls]=(spd_lbl,bar)
         self._refresh_mss()
 
-    def _add_slider(self,parent,label,var_name,lbl_name,lo,hi,init,dec):
+    def _add_slider(self,parent,label,var_name,lbl_name,lo,hi,init,dec,callback=None):
         row=tk.Frame(parent,bg=BG); row.pack(fill='x',pady=8)
         tk.Label(row,text=label,font=('Segoe UI',10),fg=TEXT2,bg=BG,width=28,anchor='w').pack(side='left')
         var=tk.DoubleVar(value=init); setattr(self,var_name,var)
         val_lbl=tk.Label(row,text=f'{init:.{dec}f}',font=('Segoe UI',12,'bold'),fg=ACCENT,bg=BG,width=7,anchor='e')
         val_lbl.pack(side='right',padx=8); setattr(self,lbl_name,val_lbl)
         fmt=f'{{:.{dec}f}}'
-        def on_slide(v,L=val_lbl,f=fmt): L.config(text=f.format(float(v))); self._on_curve()
+        cb=callback or self._on_curve
+        def on_slide(v,L=val_lbl,f=fmt,fn=cb): L.config(text=f.format(float(v))); fn()
         ttk.Scale(row,from_=lo,to=hi,variable=var,orient='horizontal',length=280,command=on_slide).pack(side='left',padx=8)
 
     def _on_surface(self,_=None):
@@ -876,6 +941,9 @@ class App(tk.Tk):
     def _on_curve(self):
         self.state.set_curve(self.mu_var.get(),self.rad_var.get(),self.bank_var.get())
         self._refresh_mss()
+
+    def _on_conf(self):
+        self.state.set_conf(self.conf_var.get())
 
     def _toggle_pause(self):
         self.state.paused=not self.state.paused
@@ -921,16 +989,29 @@ class App(tk.Tk):
         t2 = "●" if s2=='connected' else "○"
         self.source_status_lbl.config(text=f'S1: {t1} {s1}  |  S2: {t2} {s2}', fg=C_GREEN if (s1=='connected' or s2=='connected') else TEXT2)
 
-        connected,last_ok=self.state.get_esp32_status()
-        age=time.time()-last_ok if last_ok else None
-        if last_ok==0.0:
+        # Roadside ESP32 status
+        connected, last_ok = self.state.get_esp32_status()
+        age = time.time() - last_ok if last_ok else None
+        if last_ok == 0.0:
             self.esp32_dot.config(fg=TEXT2); self.esp32_status_lbl.config(text='no data sent yet')
-        elif connected and age is not None and age<3.0:
+        elif connected and age is not None and age < 3.0:
             self.esp32_dot.config(fg=C_GREEN)
-            self.esp32_status_lbl.config(text=f'sending dual payload to {ESP32_IP_ROAD} & {ESP32_IP_VEHICLE} (ok {age:.1f}s ago)')
+            self.esp32_status_lbl.config(text=f'{ESP32_IP}:{ESP32_PORT} (ok {age:.1f}s)')
         else:
             self.esp32_dot.config(fg=C_RED)
-            self.esp32_status_lbl.config(text='send failing — check ESP32 IPs')
+            self.esp32_status_lbl.config(text=f'failing — {ESP32_IP}:{ESP32_PORT}')
+
+        # In-Car ESP32 status
+        car_conn, car_ok = self.state.get_car_esp32_status()
+        car_age = time.time() - car_ok if car_ok else None
+        if car_ok == 0.0:
+            self.car_esp32_dot.config(fg=TEXT2); self.car_esp32_status_lbl.config(text='no data sent yet')
+        elif car_conn and car_age is not None and car_age < 3.0:
+            self.car_esp32_dot.config(fg=C_GREEN)
+            self.car_esp32_status_lbl.config(text=f'{CAR_ESP32_IP}:{CAR_ESP32_PORT} (ok {car_age:.1f}s)')
+        else:
+            self.car_esp32_dot.config(fg=C_RED)
+            self.car_esp32_status_lbl.config(text=f'failing — {CAR_ESP32_IP}:{CAR_ESP32_PORT}')
 
     def _update_canvas(self, canvas, frame, current_img):
         if frame is None: return current_img
@@ -952,28 +1033,28 @@ class App(tk.Tk):
 
     def _refresh_table(self):
         v1, v2 = self.state.get_vehicles()
-        
+
         def fp(v):
             spd = int(v['speed']) if v['speed'] is not None and v['show_speed'] else -1
             return (v['id'], spd, round(v['distance'] or 999, 0))
-            
+
         cur_fp = frozenset((1, *fp(v)) for v in v1) | frozenset((2, *fp(v)) for v in v2)
         if cur_fp == self._last_vehicle_fp: return
         self._last_vehicle_fp = cur_fp
-        
+
         def update_tree(tree, vehicles):
             for r in tree.get_children(): tree.delete(r)
-            ordered = sorted(vehicles, key=lambda x: x['distance'] or 999) 
-            
+            ordered = sorted(vehicles, key=lambda x: x['distance'] or 999)
+
             for v in ordered:
                 spd = v['speed']; dist = v['distance']; lim = v['limit']; brk = v['brake_kn']; show = v['show_speed']
                 spd_txt = f"{int(spd)} km/h" if spd is not None and show else 'tracking…'
                 dist_txt = f"{dist:.1f} m" if dist else '?'
                 brk_txt = f"{brk:.1f} kN" if brk > 0 else '—'
                 tag = ('over' if spd and show and spd >= lim else 'caution' if spd and show and spd >= lim*.9 else 'ok')
-                
+
                 tree.insert('', 'end', values=(f'#{v["id"]}', v['type'], spd_txt, dist_txt, f'{lim:.0f}', brk_txt), tags=(tag,))
-                
+
             tree.tag_configure('over', foreground=C_RED)
             tree.tag_configure('caution', foreground=C_YELLOW)
             tree.tag_configure('ok', foreground=TEXT)
@@ -994,10 +1075,10 @@ class App(tk.Tk):
         entries = self.state.get_alerts()
         if len(entries) == self._alerts_seen: return
         self._alerts_seen = len(entries)
-        
+
         self.alerts_list1.delete(0, 'end')
         self.alerts_list2.delete(0, 'end')
-        
+
         has_alerts1 = False
         has_alerts2 = False
 
@@ -1009,7 +1090,7 @@ class App(tk.Tk):
             else:
                 self.alerts_list2.insert('end', txt)
                 has_alerts2 = True
-                
+
         if not has_alerts1: self.alerts_list1.insert('end', ' No alerts yet')
         if not has_alerts2: self.alerts_list2.insert('end', ' No alerts yet')
 
@@ -1017,12 +1098,12 @@ class App(tk.Tk):
         tk.Frame(parent, bg=BG3, height=1).pack(fill='x', pady=8, padx=8)
 
 # ═══════════════════════════════════════════════════════════
-#   ENTRY POINT
+#  ENTRY POINT
 # ═══════════════════════════════════════════════════════════
 
 def main():
     print('\n'+'='*70)
-    print('  Vehicle Detection System  —  Dual Camera Edition  v11')
+    print('  Vehicle Detection System  —  Dual Camera + In-Car V2I  v12')
     print('='*70)
     model=YOLO(DEFAULT_MODEL)
     print('✅  Model loaded')
